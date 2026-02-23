@@ -52,9 +52,11 @@ private:
   std::string index_block_;        // encoded as a block too
   std::vector<uint32_t> index_restarts_;
   int index_entries_since_restart_{0};
-  std::string pending_index_key_;
-  BlockHandle pending_handle_;
-  bool has_pending_index_{false};
+
+  // deprecated elements:
+  //std::string pending_index_key_;
+  //BlockHandle pending_handle_;
+  //bool has_pending_index_{false};
 
   // bloom building: add user_key or internal_key (pick user_key)
   // (implementation in bloom.h)

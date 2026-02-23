@@ -79,24 +79,22 @@ Status SSTableBuilder::Add(Slice internal_key, Slice value) {
     }
   }
 
-
-  // Flush pending index entry if set.
-  // Index key is *exactly* the last key of the previous data block.
-  if (has_pending_index_) {
-    std::string bh;
-    EncodeBlockHandle(bh, pending_handle_);
-  
-    AppendEntry(index_block_,
-                /*last_key=*/last_index_key_,
-                /*key=*/pending_index_key_,
-                /*value=*/bh,
-                index_restarts_,
-                opt_.restart_interval,
-                index_entries_since_restart_);
-  
-    last_index_key_ = pending_index_key_;
-    has_pending_index_ = false;
-  }
+  // ---deprecated---
+  //if (has_pending_index_) {
+  //  std::string bh;
+  //  EncodeBlockHandle(bh, pending_handle_);
+  //
+  //  // IMPORTANT: make index entries restart every entry and use no prefix compression
+  //  AppendEntry(index_block_,
+  //              /*last_key=*/std::string_view(),          // force shared_prefix=0
+  //              /*key=*/pending_index_key_,
+  //              /*value=*/bh,
+  //              index_restarts_,
+  //              /*restart_interval=*/1,                   // restart every entry
+  //              index_entries_since_restart_);
+  //
+  //  has_pending_index_ = false;
+  //}
 
   // If data block would exceed target, flush it.
   // Rough estimate: varints + key/value bytes.
@@ -125,7 +123,6 @@ Status SSTableBuilder::Add(Slice internal_key, Slice value) {
 }
 
 Status SSTableBuilder::FlushDataBlock() {
-  // finalize current data block bytes
   FinishBlock(data_block_, restarts_);
 
   BlockHandle h;
@@ -134,15 +131,23 @@ Status SSTableBuilder::FlushDataBlock() {
 
   Status s = out_->Append(Slice(data_block_));
   if (!s) return s;
-
   offset_ += h.size;
 
-  // record pending index entry key = last_key_ (we'll separator once we see next key)
-  pending_index_key_ = last_key_;
-  pending_handle_ = h;
-  has_pending_index_ = true;
+  // Immediately write index entry: key = last_key_ of this data block
+  {
+    std::string bh;
+    EncodeBlockHandle(bh, h);
 
-  // reset block
+    AppendEntry(index_block_,
+                /*last_key=*/std::string_view(),   // force shared_prefix=0
+                /*key=*/last_key_,
+                /*value=*/bh,
+                index_restarts_,
+                /*restart_interval=*/1,
+                index_entries_since_restart_);
+  }
+
+  // Reset data block
   data_block_.clear();
   restarts_.clear();
   restarts_.push_back(0);
@@ -153,28 +158,29 @@ Status SSTableBuilder::FlushDataBlock() {
 
 Status SSTableBuilder::Finish() {
   if (finished_) return Status::Invalid("sst builder: finished");
+
   // Flush final data block if non-empty
   if (!data_block_.empty()) {
     Status s = FlushDataBlock();
     if (!s) return s;
   }
 
-  // Flush final pending index entry using its own key (no separator available).
-  if (has_pending_index_) {
-    std::string bh;
-    EncodeBlockHandle(bh, pending_handle_);
-  
-    AppendEntry(index_block_,
-                /*last_key=*/last_index_key_,
-                /*key=*/pending_index_key_,
-                /*value=*/bh,
-                index_restarts_,
-                opt_.restart_interval,
-                index_entries_since_restart_);
-  
-    last_index_key_ = pending_index_key_;
-    has_pending_index_ = false;
-  }
+  // ---deprecated---
+  // Flush final pending index entry using its own key
+  //if (has_pending_index_) {
+  //  std::string bh;
+  //  EncodeBlockHandle(bh, pending_handle_);
+  //
+  //  AppendEntry(index_block_,
+  //              /*last_key=*/std::string_view(),
+  //              /*key=*/pending_index_key_,
+  //              /*value=*/bh,
+  //              index_restarts_,
+  //              /*restart_interval=*/1,
+  //              index_entries_since_restart_);
+  //
+  //  has_pending_index_ = false;
+  //}
   FinishBlock(index_block_, index_restarts_);
 
   // Write index block
@@ -183,7 +189,8 @@ Status SSTableBuilder::Finish() {
   if (!s) return s;
   offset_ += index_h.size;
 
-  // Meta block: bloom only (encoded as: varint32 tag=1 | varint32 len | bloom_bytes)
+  // Meta block: bloom only
+  //   (encoded as: varint32 tag=1 | varint32 len | bloom_bytes)
   std::string meta;
   if (opt_.build_bloom) {
     // Build bloom from stored hashes.
