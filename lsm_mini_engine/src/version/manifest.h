@@ -42,8 +42,13 @@ class VersionSet {
 public:
   VersionSet() = default;
 
-  std::shared_ptr<const Version> Current() const { return current_.load(); }
-  void Publish(std::shared_ptr<const Version> v) { current_.store(std::move(v)); }
+  std::shared_ptr<const Version> Current() const {
+    return std::atomic_load_explicit(&current_, std::memory_order_acquire);
+  }
+  
+  void Publish(std::shared_ptr<const Version> v) {
+    std::atomic_store_explicit(&current_, std::move(v), std::memory_order_release);
+  }
 
   // DB open: rebuild version by replaying MANIFEST records.
   Status Recover(Env* env, const std::string& dbdir);
@@ -52,6 +57,7 @@ public:
   Status LogAndApply(Env* env, const std::string& dbdir, const VersionEdit& edit);
 
 private:
-  std::atomic<std::shared_ptr<const Version>> current_{std::make_shared<Version>()};
+  std::shared_ptr<const Version> current_{std::make_shared<Version>()};
+
 };
 

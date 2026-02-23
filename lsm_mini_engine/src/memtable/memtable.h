@@ -2,6 +2,7 @@
 #include <map>
 #include <memory>
 #include <shared_mutex>
+
 #include "iter/iterator.h"
 #include "iter/internal_key.h"
 
@@ -11,7 +12,7 @@ struct MemOptions {
 
 class MemTable {
 public:
-  explicit MemTable(MemOptions opt) : opt_(opt) {}
+  explicit MemTable(MemOptions opt);
 
   Status Put(uint64_t seq, Slice user_key, Slice value);
   Status Del(uint64_t seq, Slice user_key);

@@ -15,6 +15,8 @@ struct DBOptions {
 
 class DB {
 public:
+  ~DB() = default;
+
   static Status Open(DBOptions opt, std::string dbdir, std::unique_ptr<DB>* out);
 
   Status Put(Slice key, Slice value);

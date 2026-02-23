@@ -1,9 +1,12 @@
 #pragma once
+
 #include <memory>
 #include <vector>
-#include "iter/iterator.h"
-#include "sstable/format.h"
+
+#include "iter/iterator.h"  // Status, Slice, Iterator
 #include "iter/internal_key.h"
+#include "sstable/format.h"
+#include "sstable/bloom.h"
 
 class RandomAccessFile {
 public:
@@ -15,18 +18,6 @@ public:
 struct TableReaderOptions {
   bool use_mmap = true;    // optional
   bool verify_magic = true;
-};
-
-class Iterator {
-public:
-  virtual ~Iterator() = default;
-  virtual bool Valid() const = 0;
-  virtual void Seek(Slice target) = 0;
-  virtual void SeekToFirst() = 0;
-  virtual void Next() = 0;
-  virtual Slice key() const = 0;
-  virtual Slice value() const = 0;
-  virtual Status status() const = 0;
 };
 
 class TableReader {
@@ -58,5 +49,5 @@ private:
   std::string meta_block_;
 
   // bloom filter decoded
-  // (implementation-defined: store bits + k)
+  Bloom bloom_;
 };

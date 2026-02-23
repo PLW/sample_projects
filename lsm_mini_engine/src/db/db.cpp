@@ -10,8 +10,6 @@
 #include "wal/wal.h"
 #include "iter/internal_key.h"
 
-DB::~DB() = default;
-
 Status DB::Open(DBOptions opt, std::string dbdir, std::unique_ptr<DB>* out) {
   auto db = std::unique_ptr<DB>(new DB());
   db->opt_ = opt;

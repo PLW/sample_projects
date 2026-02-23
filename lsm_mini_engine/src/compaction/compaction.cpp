@@ -18,7 +18,8 @@ CompactionPlan Compactor::PickL0(const Version& v, size_t l0_trigger) {
 
 Status Compactor::RunL0Compaction(const CompactionPlan& plan,
                                  VersionSet* versions,
-                                 /*env*/ ) {
+                                 Env* env ) {
+  (void)versions; (void)env;
   if (plan.inputs.empty()) return Status::OK();
   // This function depends on your env/file creation; leave as scaffold.
   return Status::Invalid("compaction: env integration not implemented");

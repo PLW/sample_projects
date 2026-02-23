@@ -1,10 +1,12 @@
 #include "wal/wal.h"
+#include "memtable/memtable.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
 #include "sstable/varint.h"
+
 
 // Tiny CRC32 (ok for tests); replace with a real one later.
 static uint32_t crc32_fast(const uint8_t* data, size_t n) {
@@ -92,17 +94,18 @@ Status WalWriter::AppendDel(uint64_t seq, Slice user_key) {
 }
 
 Status WalWriter::AppendRecord(const WalRecord& r) {
-  // record := fixed32 crc | varint32 len | u8 type | payload
+  // body := u8 type | payload
   std::string payload = EncodeWalPayload(r);
+  std::string body;
+  PutU8(body, uint8_t(r.type));
+  body.append(payload);
 
   std::string rec;
-  // placeholder crc
-  PutFixed32LE(rec, 0);
-  PutVarint32(rec, uint32_t(payload.size() + 1));
-  PutU8(rec, uint8_t(r.type));
-  rec.append(payload);
+  PutFixed32LE(rec, 0);                       // crc placeholder
+  PutVarint32(rec, uint32_t(body.size()));    // len = body size
+  rec.append(body);
 
-  uint32_t crc = crc32_fast(reinterpret_cast<const uint8_t*>(rec.data() + 4), rec.size() - 4);
+  uint32_t crc = crc32_fast(reinterpret_cast<const uint8_t*>(body.data()), body.size());
   std::memcpy(rec.data(), &crc, 4);
 
   return f_->Append(Slice(rec));

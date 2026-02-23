@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -21,4 +22,20 @@ struct Slice {
   Slice(const char* p_, size_t n_) : p(p_), n(n_) {}
   Slice(std::string_view sv) : p(sv.data()), n(sv.size()) {}
   std::string_view sv() const { return {p, n}; }
+};
+
+// Minimal iterator interface used across memtable/sstable/merge.
+class Iterator {
+public:
+  virtual ~Iterator() = default;
+
+  virtual bool Valid() const = 0;
+  virtual void Seek(Slice target) = 0;
+  virtual void SeekToFirst() = 0;
+  virtual void Next() = 0;
+
+  virtual Slice key() const = 0;
+  virtual Slice value() const = 0;
+
+  virtual Status status() const = 0;
 };

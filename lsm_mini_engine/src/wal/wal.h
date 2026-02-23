@@ -1,9 +1,13 @@
 #pragma once
+
 #include <cstdint>
 #include <string>
 #include <memory>
+
 #include "iter/iterator.h"
 #include "iter/internal_key.h"
+#include "sstable/builder.h"  // WritableFile
+#include "sstable/reader.h"   // RandomAccessFile
 
 struct WalRecord {
   ValueType type;

@@ -1,6 +1,7 @@
 #include "memtable/memtable.h"
 
 #include <cstring>
+#include <map>
 #include <functional>
 
 #include "iter/internal_key.h"
@@ -109,7 +110,9 @@ std::shared_ptr<const MemTable> MemTable::Freeze() const {
 namespace {
 class MapIter final : public Iterator {
 public:
-  using MapT = decltype(std::declval<MemTable>().map_);
+  using MapT = std::map<std::string, std::string,
+                      std::function<bool(const std::string&, const std::string&)>>;
+
   explicit MapIter(const MapT* m) : m_(m) {}
 
   void SeekToFirst() override { it_ = m_->begin(); }

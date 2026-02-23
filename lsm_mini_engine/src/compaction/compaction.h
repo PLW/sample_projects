@@ -11,11 +11,13 @@ struct CompactionPlan {
   size_t target_file_size = 64 * 1024 * 1024;
 };
 
+class Env;
+
 class Compactor {
 public:
   Status RunL0Compaction(const CompactionPlan& plan,
                          VersionSet* versions,
-                         /*file env*/);
+                         Env* env);
 
   // selection policy
   static CompactionPlan PickL0(const Version& v, size_t l0_trigger = 8);

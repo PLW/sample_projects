@@ -10,6 +10,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # --- Library sources under src/ ---
 file(GLOB_RECURSE LSM_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/src/iter/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/wal/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/memtable/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/sstable/*.cpp"

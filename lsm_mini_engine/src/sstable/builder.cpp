@@ -85,8 +85,11 @@ Status SSTableBuilder::Add(Slice internal_key, Slice value) {
     // add to index_block_ as a block-encoded entry
     std::string bh;
     EncodeBlockHandle(bh, pending_handle_);
-    AppendEntry(index_block_, /*last_key=*/last_key_, sep, bh,
-                index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    //AppendEntry(index_block_, /*last_key=*/last_key_, sep, bh,
+    //            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    AppendEntry(index_block_, /*last_key=*/last_index_key_, sep, bh,
+            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    last_index_key_ = sep;
     has_pending_index_ = false;
   }
 
@@ -155,9 +158,13 @@ Status SSTableBuilder::Finish() {
   if (has_pending_index_) {
     std::string bh;
     EncodeBlockHandle(bh, pending_handle_);
-    AppendEntry(index_block_, /*last_key=*/std::string_view(),
-                pending_index_key_, bh,
-                index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    //AppendEntry(index_block_, /*last_key=*/std::string_view(),
+    //            pending_index_key_, bh,
+    //            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    AppendEntry(index_block_, /*last_key=*/last_index_key_,
+            pending_index_key_, bh,
+            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+    last_index_key_ = pending_index_key_;
     has_pending_index_ = false;
   }
   FinishBlock(index_block_, index_restarts_);

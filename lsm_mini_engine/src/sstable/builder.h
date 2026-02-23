@@ -43,6 +43,7 @@ private:
   InternalKeyComparator cmp_;
 
   std::string last_key_;
+  std::string last_index_key_;
   std::string data_block_;
   std::vector<uint32_t> restarts_;
   int entries_since_restart_{0};
