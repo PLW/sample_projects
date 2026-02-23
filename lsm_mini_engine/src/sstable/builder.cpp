@@ -79,17 +79,22 @@ Status SSTableBuilder::Add(Slice internal_key, Slice value) {
     }
   }
 
-  // Flush pending index entry if set and we now know next key.
+
+  // Flush pending index entry if set.
+  // Index key is *exactly* the last key of the previous data block.
   if (has_pending_index_) {
-    std::string sep = ShortSeparator(pending_index_key_, internal_key.sv());
-    // add to index_block_ as a block-encoded entry
     std::string bh;
     EncodeBlockHandle(bh, pending_handle_);
-    //AppendEntry(index_block_, /*last_key=*/last_key_, sep, bh,
-    //            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
-    AppendEntry(index_block_, /*last_key=*/last_index_key_, sep, bh,
-            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
-    last_index_key_ = sep;
+  
+    AppendEntry(index_block_,
+                /*last_key=*/last_index_key_,
+                /*key=*/pending_index_key_,
+                /*value=*/bh,
+                index_restarts_,
+                opt_.restart_interval,
+                index_entries_since_restart_);
+  
+    last_index_key_ = pending_index_key_;
     has_pending_index_ = false;
   }
 
@@ -158,12 +163,15 @@ Status SSTableBuilder::Finish() {
   if (has_pending_index_) {
     std::string bh;
     EncodeBlockHandle(bh, pending_handle_);
-    //AppendEntry(index_block_, /*last_key=*/std::string_view(),
-    //            pending_index_key_, bh,
-    //            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
-    AppendEntry(index_block_, /*last_key=*/last_index_key_,
-            pending_index_key_, bh,
-            index_restarts_, opt_.restart_interval, index_entries_since_restart_);
+  
+    AppendEntry(index_block_,
+                /*last_key=*/last_index_key_,
+                /*key=*/pending_index_key_,
+                /*value=*/bh,
+                index_restarts_,
+                opt_.restart_interval,
+                index_entries_since_restart_);
+  
     last_index_key_ = pending_index_key_;
     has_pending_index_ = false;
   }
