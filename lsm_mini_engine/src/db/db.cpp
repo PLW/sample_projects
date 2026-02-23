@@ -5,122 +5,150 @@
 #include <mutex>
 #include <vector>
 
+#include "sstable/builder.h"
+#include "sstable/reader.h"
+#include "wal/wal.h"
 #include "iter/internal_key.h"
-#include "iter/merging_iter.h"
+
+DB::~DB() = default;
 
 Status DB::Open(DBOptions opt, std::string dbdir, std::unique_ptr<DB>* out) {
   auto db = std::unique_ptr<DB>(new DB());
   db->opt_ = opt;
   db->dir_ = std::move(dbdir);
+
+  db->owned_env_ = std::make_unique<PosixEnv>();
+  db->env_ = db->owned_env_.get();
+
+  Status s = db->env_->CreateDirIfMissing(db->dir_);
+  if (!s) return s;
+
+  // Recover MANIFEST (or create new)
+  s = db->versions_.Recover(db->env_, db->dir_);
+  if (!s) return s;
+
+  // Open existing SSTables referenced by Version (lazy-open is fine; do eager here)
+  {
+    auto cur = std::make_shared<Version>(*db->versions_.Current());
+    for (auto& fm : cur->l0) {
+      std::shared_ptr<const RandomAccessFile> raf;
+      s = db->env_->NewRandomAccessFile(db->TablePath(fm.file_number), &raf);
+      if (!s) return s;
+      std::unique_ptr<TableReader> tr;
+      s = TableReader::Open(TableReaderOptions{}, raf, &tr);
+      if (!s) return s;
+      fm.table = std::shared_ptr<TableReader>(tr.release());
+    }
+    db->versions_.Publish(cur);
+  }
+
+  // Open WAL (new file if missing)
   db->mem_ = std::make_unique<MemTable>(opt.mem);
 
-  // TODO: open WAL file + recover:
-  // - read MANIFEST to get tables
-  // - read WAL and replay into memtable
-  // For tests, you can construct DB without these.
+  // Replay WAL if exists
+  s = db->RecoverWAL();
+  if (!s) return s;
+
+  // Open WAL writer (truncate WAL after replay for mini-engine)
+  std::unique_ptr<WritableFile> wwf;
+  s = db->env_->NewWritableFile(db->WalPath(), &wwf);
+  if (!s) return s;
+  db->wal_ = std::make_unique<WalWriter>(wwf.release()); // WalWriter stores raw pointer per earlier sketch
 
   *out = std::move(db);
   return Status::OK();
 }
 
-Status DB::Put(Slice key, Slice value) {
-  std::lock_guard lk(mu_);
-  uint64_t seq = ++last_seq_;
+Status DB::RecoverWAL() {
+  bool ex=false;
+  Status s = env_->FileExists(WalPath(), &ex);
+  if (!s) return s;
+  if (!ex) return Status::OK();
 
-  if (opt_.use_wal && wal_) {
-    Status s = wal_->AppendPut(seq, key, value);
-    if (!s) return s;
-  }
-  Status s = mem_->Put(seq, key, value);
+  std::shared_ptr<const RandomAccessFile> rf;
+  s = env_->NewRandomAccessFile(WalPath(), &rf);
   if (!s) return s;
 
-  return MaybeFlush();
-}
-
-Status DB::Del(Slice key) {
-  std::lock_guard lk(mu_);
-  uint64_t seq = ++last_seq_;
-
-  if (opt_.use_wal && wal_) {
-    Status s = wal_->AppendDel(seq, key);
-    if (!s) return s;
-  }
-  Status s = mem_->Del(seq, key);
+  WalReader wr(rf);
+  uint64_t max_seq = 0;
+  s = wr.Replay(mem_.get(), &max_seq);
   if (!s) return s;
 
-  return MaybeFlush();
-}
+  last_seq_ = std::max(last_seq_, max_seq);
 
-Status DB::Get(Slice key, std::string* value_out) {
-  // Take snapshot seq
-  std::shared_ptr<const Version> ver = versions_.Current();
-  uint64_t snapshot = ver->last_sequence;
-  {
-    std::lock_guard lk(mu_);
-    snapshot = std::max(snapshot, last_seq_);
-  }
-
-  // 1) memtable
-  {
-    std::string v;
-    ValueType t = ValueType::kPut;
-    Status s = mem_->Get(key, snapshot, &v, &t);
-    if (s && t == ValueType::kPut) { *value_out = std::move(v); return Status::OK(); }
-    if (s && t == ValueType::kDel) return Status::NotFound("deleted");
-  }
-
-  // 2) immutable memtables (if you keep them)
-  for (auto& imm : immutables_) {
-    std::string v;
-    ValueType t = ValueType::kPut;
-    Status s = imm->Get(key, snapshot, &v, &t);
-    if (s && t == ValueType::kPut) { *value_out = std::move(v); return Status::OK(); }
-    if (s && t == ValueType::kDel) return Status::NotFound("deleted");
-  }
-
-  // 3) SSTables newest->oldest (L0 order as stored)
-  std::string ik = EncodeInternalKey(key.sv(), snapshot, ValueType::kPut);
-  for (auto it = ver->l0.rbegin(); it != ver->l0.rend(); ++it) {
-    if (!it->table) continue;
-    std::string v;
-    ValueType t = ValueType::kPut;
-    Status s = it->table->Get(Slice(ik), &v, &t);
-    if (!s) continue;
-    if (t == ValueType::kPut) { *value_out = std::move(v); return Status::OK(); }
-    return Status::NotFound("deleted");
-  }
-
-  return Status::NotFound("not found");
-}
-
-std::unique_ptr<Iterator> DB::NewIterator() {
-  // Merge mem + sst iterators (no MVCC collapsing wrapper here yet).
-  std::vector<std::unique_ptr<Iterator>> children;
-  children.push_back(mem_->NewIterator());
-  for (auto& imm : immutables_) children.push_back(imm->NewIterator());
-
-  auto ver = versions_.Current();
-  for (auto& f : ver->l0) {
-    if (f.table) children.push_back(f.table->NewIterator());
-  }
-  return std::make_unique<MergingIterator>(InternalKeyComparator{}, std::move(children));
+  // Update manifest last_sequence so snapshots reflect recovered seq
+  VersionEdit e;
+  e.set_last_sequence = last_seq_;
+  auto cur = versions_.Current();
+  e.set_next_file_number = cur->next_file_number;
+  return versions_.LogAndApply(env_, dir_, e);
 }
 
 Status DB::MaybeFlush() {
   if (mem_->ApproxBytes() < opt_.mem_flush_threshold_bytes) return Status::OK();
 
-  // Freeze
   auto frozen = mem_->Freeze();
   immutables_.push_back(frozen);
-
-  // New mutable memtable
   mem_ = std::make_unique<MemTable>(opt_.mem);
 
-  // TODO: flush frozen to new SSTable file via Env, then publish new Version.
-  // For now, this is a hook point.
+  // Flush immediately (single-thread mini-engine)
+  Status s = FlushFrozenToSST(frozen);
+  if (!s) return s;
+
+  // remove from immutables_
+  immutables_.erase(std::remove(immutables_.begin(), immutables_.end(), frozen), immutables_.end());
   return Status::OK();
 }
 
-Status DB::FlushMemtable(std::shared_ptr<const MemTable> /*frozen*/) {
-  return Status::Invalid("db: FlushMemtable env integration not implemented");
+Status DB::FlushFrozenToSST(std::shared_ptr<const MemTable> frozen) {
+  auto cur = versions_.Current();
+  uint64_t file_no = cur->next_file_number;
+  uint64_t next_file_no = file_no + 1;
+
+  std::unique_ptr<WritableFile> wf;
+  Status s = env_->NewWritableFile(TablePath(file_no), &wf);
+  if (!s) return s;
+
+  SSTableBuilder sb(opt_.sst, wf.get());
+
+  auto it = frozen->NewIterator();
+  it->SeekToFirst();
+
+  std::string smallest, largest;
+  bool first = true;
+
+  for (; it->Valid(); it->Next()) {
+    if (first) { smallest.assign(it->key().p, it->key().n); first = false; }
+    largest.assign(it->key().p, it->key().n);
+    s = sb.Add(it->key(), it->value());
+    if (!s) return s;
+  }
+  s = sb.Finish();
+  if (!s) return s;
+
+  uint64_t fsz = wf->Size();
+  s = wf->Sync();
+  if (!s) return s;
+
+  // Open reader for new table
+  std::shared_ptr<const RandomAccessFile> raf;
+  s = env_->NewRandomAccessFile(TablePath(file_no), &raf);
+  if (!s) return s;
+  std::unique_ptr<TableReader> tr;
+  s = TableReader::Open(TableReaderOptions{}, raf, &tr);
+  if (!s) return s;
+
+  FileMeta fm;
+  fm.file_number = file_no;
+  fm.file_size = fsz;
+  fm.smallest = std::move(smallest);
+  fm.largest = std::move(largest);
+  fm.table = std::shared_ptr<TableReader>(tr.release());
+
+  VersionEdit e;
+  e.add_l0.push_back(fm);
+  e.set_next_file_number = next_file_no;
+  e.set_last_sequence = last_seq_;
+
+  return versions_.LogAndApply(env_, dir_, e);
 }

@@ -4,6 +4,7 @@
 #include "wal/wal.h"
 #include "memtable/memtable.h"
 #include "version/manifest.h"
+#include "env/posix_env.h"
 
 struct DBOptions {
   MemOptions mem;
@@ -24,9 +25,20 @@ public:
   std::unique_ptr<Iterator> NewIterator();
 
 private:
+  std::string WalPath() const {
+    return dir_ + "/WAL"; }
+  std::string TablePath(uint64_t file_no) const {
+    return dir_ + "/sst_" + std::to_string(file_no) + ".sst"; }
+
+  Status RecoverWAL();
+  Status FlushFrozenToSST(std::shared_ptr<const MemTable> frozen);
+
   Status MaybeFlush();
   Status FlushMemtable(std::shared_ptr<const MemTable> frozen);
 
+private:
+  Env* env_{nullptr};               // owned by DB (PosixEnv) for now
+  std::unique_ptr<Env> owned_env_;  // actual storage
   DBOptions opt_;
   std::string dir_;
 
