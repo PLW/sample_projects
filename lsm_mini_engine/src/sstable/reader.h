@@ -1,13 +1,14 @@
 #pragma once
-
+#include <cstdint>
 #include <memory>
-#include <vector>
+#include <string>
 
-#include "iter/iterator.h"  // Status, Slice, Iterator
-#include "iter/internal_key.h"
+#include "iter/iterator.h"       // Iterator, Status, Slice
+#include "iter/internal_key.h"   // ValueType, DecodeInternalKey
 #include "sstable/format.h"
-#include "sstable/bloom.h"
+#include "sstable/block.h"
 
+// Reuse your existing file abstraction.
 class RandomAccessFile {
 public:
   virtual ~RandomAccessFile() = default;
@@ -16,7 +17,6 @@ public:
 };
 
 struct TableReaderOptions {
-  bool use_mmap = true;    // optional
   bool verify_magic = true;
 };
 
@@ -28,26 +28,21 @@ public:
 
   std::unique_ptr<Iterator> NewIterator() const;
 
-  // Point lookup (fast path: bloom -> index -> data block)
+  // internal_key is (user_key, snapshot_seq, PUT) style.
   Status Get(Slice internal_key, std::string* value_out, ValueType* type_out) const;
 
-  Slice SmallestKey() const;
-  Slice LargestKey() const;
-
 private:
-  TableReader(std::shared_ptr<const RandomAccessFile> f, Footer footer);
+  TableReader(std::shared_ptr<const RandomAccessFile> f, sstable::Footer footer);
 
-  Status ReadFooter();
-  Status ReadBlock(const BlockHandle& h, std::string* block) const;
+  Status ReadBlock(const sstable::BlockHandle& h, std::string* out) const;
+
+  // Find the first data block whose index key >= target. Returns false if none.
+  bool FindDataBlockForKey(Slice target, sstable::BlockHandle* h_out) const;
 
   std::shared_ptr<const RandomAccessFile> file_;
-  Footer footer_;
-  InternalKeyComparator cmp_;
+  sstable::Footer footer_;
 
-  // cached blocks (simple version: keep index/meta in memory)
-  std::string index_block_;
-  std::string meta_block_;
-
-  // bloom filter decoded
-  Bloom bloom_;
+  // cached decoded index block
+  std::string index_storage_;
+  sstable::BlockView index_view_;
 };

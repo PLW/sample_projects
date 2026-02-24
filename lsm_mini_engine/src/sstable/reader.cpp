@@ -1,162 +1,120 @@
 #include "sstable/reader.h"
 
-#include <cstdint>
+#include <algorithm>
 #include <cstring>
-#include <memory>
-#include <string>
-#include <vector>
 
-#include "sstable/varint.h"
+#include "sstable/block.h"
 #include "sstable/format.h"
-#include "sstable/bloom.h"
 #include "iter/internal_key.h"
 
-// ---------- Block iterator (prefix-compressed w/ restart array) ----------
 namespace {
 
-struct BlockView {
-  Slice data;               // whole block bytes
-  const char* restarts{nullptr};
-  uint32_t num_restarts{0};
-  uint32_t restart_offset0{0};
-};
-
-static Status ParseBlock(Slice block, BlockView* out) {
-  if (block.n < 4) return Status::Corruption("block: too small");
-  uint32_t nr = 0;
-  std::memcpy(&nr, block.p + (block.n - 4), 4);
-  size_t restarts_bytes = size_t(nr) * 4 + 4;
-  if (block.n < restarts_bytes) return Status::Corruption("block: bad restarts");
-  out->data = block;
-  out->num_restarts = nr;
-  out->restarts = block.p + (block.n - restarts_bytes);
-  if (nr > 0) std::memcpy(&out->restart_offset0, out->restarts, 4);
-  return Status::OK();
+static inline int BytewiseCompare(Slice a, Slice b) {
+  auto sa = a.sv();
+  auto sb = b.sv();
+  if (sa < sb) return -1;
+  if (sa > sb) return 1;
+  return 0;
 }
 
-static uint32_t RestartAt(const BlockView& b, uint32_t i) {
-  uint32_t off = 0;
-  std::memcpy(&off, b.restarts + i * 4, 4);
-  return off;
-}
+static inline bool DecodeBlockHandleFromValue(Slice v, sstable::BlockHandle* out) {
+  // varint64 off | varint64 size
+  auto p = v.p;
+  size_t n = v.n;
 
-static bool ReadEntryAt(const BlockView& b, uint32_t offset,
-                        std::string* last_key_io,
-                        Slice* key_out, Slice* val_out,
-                        uint32_t* next_offset_out) {
-  Slice in(b.data.p + offset, b.data.n - offset);
+  auto get_varint64 = [&](uint64_t* dst) -> bool {
+    uint64_t result = 0;
+    int shift = 0;
+    size_t i = 0;
+    while (i < n && shift <= 63) {
+      uint8_t byte = uint8_t(p[i]);
+      result |= uint64_t(byte & 0x7F) << shift;
+      i++;
+      if ((byte & 0x80) == 0) {
+        *dst = result;
+        p += i; n -= i;
+        return true;
+      }
+      shift += 7;
+    }
+    return false;
+  };
 
-  uint64_t shared=0, unshared=0, vlen=0;
-  if (!GetVarint64(&in, &shared)) return false;
-  if (!GetVarint64(&in, &unshared)) return false;
-  if (!GetVarint64(&in, &vlen)) return false;
-  if (shared > last_key_io->size()) return false;
-  if (in.n < unshared + vlen) return false;
-
-  std::string key = last_key_io->substr(0, size_t(shared));
-  key.append(in.p, size_t(unshared));
-  *last_key_io = key;
-
-  const char* vptr = in.p + unshared;
-  *key_out = Slice(last_key_io->data(), last_key_io->size());
-  *val_out = Slice(vptr, size_t(vlen));
-
-  // Compute next offset:
-  size_t consumed = (b.data.n - offset) - in.n + size_t(unshared + vlen);
-  *next_offset_out = offset + uint32_t(consumed);
+  uint64_t off=0, sz=0;
+  if (!get_varint64(&off)) return false;
+  if (!get_varint64(&sz)) return false;
+  out->offset = off;
+  out->size = sz;
   return true;
 }
 
 class BlockIter final : public Iterator {
 public:
-  BlockIter(BlockView bv, InternalKeyComparator cmp)
-    : b_(bv), cmp_(cmp) {}
+  explicit BlockIter(std::string storage)
+    : storage_(std::move(storage)) {
+    status_ = sstable::ParseBlock(Slice(storage_), &view_);
+    if (!status_) valid_ = false;
+  }
 
   void SeekToFirst() override {
-    status_ = Status::OK();
-    last_key_.clear();
-    off_ = (b_.num_restarts ? RestartAt(b_, 0) : 0);
-    ParseAtOrInvalidate();
+    if (!status_) { valid_ = false; return; }
+    idx_ = 0;
+    LoadCurrent();
   }
 
   void Seek(Slice target) override {
-    status_ = Status::OK();
-    // binary search restart points by key
-    uint32_t lo = 0, hi = b_.num_restarts;
-    while (lo + 1 < hi) {
-      uint32_t mid = (lo + hi) / 2;
-      uint32_t off = RestartAt(b_, mid);
-      Slice k, v; uint32_t next = 0;
-      std::string last;
-      if (!ReadEntryAt(b_, off, &last, &k, &v, &next)) { status_ = Status::Corruption("block seek"); valid_ = false; return; }
-      int c = cmp_(k, target);
-      if (c < 0) lo = mid;
+    if (!status_) { valid_ = false; return; }
+    // binary search over entries
+    uint32_t lo = 0, hi = view_.num_entries;
+    while (lo < hi) {
+      uint32_t mid = lo + (hi - lo) / 2;
+      Slice k, v;
+      Status s = sstable::EntryAt(view_, mid, &k, &v);
+      if (!s) { status_ = s; valid_ = false; return; }
+      int c = BytewiseCompare(k, target);
+      if (c < 0) lo = mid + 1;
       else hi = mid;
     }
-    last_key_.clear();
-    off_ = RestartAt(b_, lo);
-    ParseAtOrInvalidate();
-    // linear scan within restart interval
-    while (valid_ && cmp_(key_, target) < 0) Next();
+    idx_ = lo;
+    LoadCurrent();
   }
 
   void Next() override {
     if (!valid_) return;
-    off_ = next_off_;
-    ParseAtOrInvalidate();
+    idx_++;
+    LoadCurrent();
   }
 
   bool Valid() const override { return valid_; }
-  Slice key() const override { return valid_ ? key_ : Slice(); }
-  Slice value() const override { return valid_ ? val_ : Slice(); }
+  Slice key() const override { return key_; }
+  Slice value() const override { return val_; }
   Status status() const override { return status_; }
 
 private:
-  void ParseAtOrInvalidate() {
-    // stop before restart array region
-    size_t restarts_bytes = size_t(b_.num_restarts) * 4 + 4;
-    size_t limit = b_.data.n - restarts_bytes;
-    if (off_ >= limit) { valid_ = false; return; }
-
-    Slice k, v; uint32_t next = 0;
-    if (!ReadEntryAt(b_, off_, &last_key_, &k, &v, &next)) {
-      status_ = Status::Corruption("block: read entry");
-      valid_ = false;
-      return;
-    }
-    key_ = k;
-    val_ = v;
-    next_off_ = next;
+  void LoadCurrent() {
+    if (!status_) { valid_ = false; return; }
+    if (idx_ >= view_.num_entries) { valid_ = false; return; }
+    Status s = sstable::EntryAt(view_, idx_, &key_, &val_);
+    if (!s) { status_ = s; valid_ = false; return; }
     valid_ = true;
   }
 
-  BlockView b_;
-  InternalKeyComparator cmp_;
+  std::string storage_;
+  sstable::BlockView view_{};
+
+  uint32_t idx_{0};
   bool valid_{false};
   Status status_{Status::OK()};
-
-  uint32_t off_{0};
-  uint32_t next_off_{0};
-  std::string last_key_;
-  Slice key_, val_;
+  Slice key_{}, val_{};
 };
-
-static bool DecodeBlockHandle(Slice* in, BlockHandle* h) {
-  uint64_t off=0, sz=0;
-  if (!GetVarint64(in, &off)) return false;
-  if (!GetVarint64(in, &sz)) return false;
-  h->offset = off; h->size = sz;
-  return true;
-}
 
 } // namespace
 
-// ---------- TableReader ----------
-TableReader::TableReader(std::shared_ptr<const RandomAccessFile> f, Footer footer)
+TableReader::TableReader(std::shared_ptr<const RandomAccessFile> f, sstable::Footer footer)
   : file_(std::move(f)), footer_(footer) {}
 
-Status TableReader::ReadBlock(const BlockHandle& h, std::string* block) const {
-  return file_->Read(h.offset, size_t(h.size), block);
+Status TableReader::ReadBlock(const sstable::BlockHandle& h, std::string* out) const {
+  return file_->Read(h.offset, size_t(h.size), out);
 }
 
 Status TableReader::Open(TableReaderOptions opt,
@@ -164,7 +122,6 @@ Status TableReader::Open(TableReaderOptions opt,
                          std::unique_ptr<TableReader>* out) {
   if (file->Size() < 40) return Status::Corruption("sst: too small");
 
-  // Footer is 5*8 = 40 bytes
   std::string foot;
   Status s = file->Read(file->Size() - 40, 40, &foot);
   if (!s) return s;
@@ -176,102 +133,113 @@ Status TableReader::Open(TableReaderOptions opt,
   std::memcpy(&msz,  foot.data() + 24, 8);
   std::memcpy(&magic,foot.data() + 32, 8);
 
-  if (opt.verify_magic && magic != kSstMagic) return Status::Corruption("sst: bad magic");
+  if (opt.verify_magic && magic != sstable::kSstMagic) return Status::Corruption("sst: bad magic");
 
-  Footer f;
+  sstable::Footer f;
   f.index = {ioff, isz};
   f.meta  = {moff, msz};
 
   auto tr = std::unique_ptr<TableReader>(new TableReader(file, f));
 
-  // Load index/meta blocks
-  s = tr->ReadBlock(tr->footer_.index, &tr->index_block_);
-  if (!s) return s;
-  s = tr->ReadBlock(tr->footer_.meta, &tr->meta_block_);
+  // Load + parse index block
+  s = tr->ReadBlock(tr->footer_.index, &tr->index_storage_);
   if (!s) return s;
 
-  // Decode bloom (meta tag 1)
-  if (!tr->meta_block_.empty()) {
-    Slice m(tr->meta_block_);
-    uint64_t tag=0, len=0;
-    if (GetVarint64(&m, &tag) && GetVarint64(&m, &len)) {
-      if (tag == 1 && len <= m.n) {
-        Slice bloom_bytes{m.p, size_t(len)};
-        BloomBuilder::Decode(bloom_bytes, &tr->bloom_);
-      }
-    }
-  }
+  s = sstable::ParseBlock(Slice(tr->index_storage_), &tr->index_view_);
+  if (!s) return s;
 
   *out = std::move(tr);
   return Status::OK();
 }
 
+bool TableReader::FindDataBlockForKey(Slice target, sstable::BlockHandle* h_out) const {
+  // Find first index entry with key >= target
+  uint32_t lo = 0, hi = index_view_.num_entries;
+  while (lo < hi) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    Slice k, v;
+    if (!sstable::EntryAt(index_view_, mid, &k, &v)) return false;
+    int c = BytewiseCompare(k, target);
+    if (c < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo >= index_view_.num_entries) return false;
+
+  Slice k, v;
+  if (!sstable::EntryAt(index_view_, lo, &k, &v)) return false;
+  return DecodeBlockHandleFromValue(v, h_out);
+}
+
 std::unique_ptr<Iterator> TableReader::NewIterator() const {
-  // Table iterator: index iter (block) + current data block iter.
+  // Table iterator: uses index block + loads data blocks on demand.
   class TableIter final : public Iterator {
   public:
-    TableIter(const TableReader* tr, InternalKeyComparator cmp)
-      : tr_(tr), cmp_(cmp) {
-      // parse index block
-      BlockView bv;
-      Status s = ParseBlock(Slice(tr_->index_block_), &bv);
-      status_ = s;
-      if (!s) return;
-      index_ = std::make_unique<BlockIter>(bv, cmp_);
-    }
+    explicit TableIter(const TableReader* tr) : tr_(tr) {}
 
     void SeekToFirst() override {
-      if (!status_) return;
-      index_->SeekToFirst();
-      LoadDataBlock();
+      status_ = Status::OK();
+      idx_ = 0;
+      LoadDataBlockAtIndex(idx_);
       if (data_) data_->SeekToFirst();
       Sync();
     }
 
     void Seek(Slice target) override {
-      if (!status_) return;
-      index_->Seek(target);
-      LoadDataBlock();
+      status_ = Status::OK();
+
+      // binary search index for first key >= target
+      uint32_t lo = 0, hi = tr_->index_view_.num_entries;
+      while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        Slice k, v;
+        Status s = sstable::EntryAt(tr_->index_view_, mid, &k, &v);
+        if (!s) { status_ = s; valid_ = false; return; }
+        int c = BytewiseCompare(k, target);
+        if (c < 0) lo = mid + 1;
+        else hi = mid;
+      }
+      idx_ = lo;
+      LoadDataBlockAtIndex(idx_);
       if (data_) data_->Seek(target);
       Sync();
     }
 
     void Next() override {
-      if (!Valid()) return;
+      if (!valid_) return;
       data_->Next();
       if (!data_->Valid()) {
-        index_->Next();
-        LoadDataBlock();
+        idx_++;
+        LoadDataBlockAtIndex(idx_);
         if (data_) data_->SeekToFirst();
       }
       Sync();
     }
 
     bool Valid() const override { return valid_; }
-    Slice key() const override { return valid_ ? key_ : Slice(); }
-    Slice value() const override { return valid_ ? val_ : Slice(); }
+    Slice key() const override { return key_; }
+    Slice value() const override { return val_; }
     Status status() const override { return status_; }
 
   private:
-    void LoadDataBlock() {
+    void LoadDataBlockAtIndex(uint32_t i) {
       data_.reset();
-      if (!index_->Valid()) return;
+      data_storage_.clear();
+      valid_ = false;
 
-      // index value is BlockHandle varint64+varint64
-      Slice v = index_->value();
-      Slice tmp = v;
-      BlockHandle h;
-      if (!DecodeBlockHandle(&tmp, &h)) { status_ = Status::Corruption("sst: bad index bh"); return; }
+      if (i >= tr_->index_view_.num_entries) return;
 
-      std::string block;
-      Status s = tr_->ReadBlock(h, &block);
+      Slice k, v;
+      Status s = sstable::EntryAt(tr_->index_view_, i, &k, &v);
       if (!s) { status_ = s; return; }
-      data_storage_ = std::move(block);
 
-      BlockView bv;
-      s = ParseBlock(Slice(data_storage_), &bv);
+      sstable::BlockHandle h;
+      if (!DecodeBlockHandleFromValue(v, &h)) { status_ = Status::Corruption("sst: bad blockhandle"); return; }
+
+      s = tr_->ReadBlock(h, &data_storage_);
       if (!s) { status_ = s; return; }
-      data_ = std::make_unique<BlockIter>(bv, cmp_);
+
+      data_ = std::make_unique<BlockIter>(data_storage_);
+      if (!data_->status()) { status_ = data_->status(); data_.reset(); }
     }
 
     void Sync() {
@@ -283,65 +251,64 @@ std::unique_ptr<Iterator> TableReader::NewIterator() const {
     }
 
     const TableReader* tr_;
-    InternalKeyComparator cmp_;
-    Status status_{Status::OK()};
-    bool valid_{false};
-    Slice key_, val_;
+    uint32_t idx_{0};
 
-    std::unique_ptr<BlockIter> index_;
-    std::unique_ptr<BlockIter> data_;
     std::string data_storage_;
+    std::unique_ptr<BlockIter> data_;
+
+    bool valid_{false};
+    Status status_{Status::OK()};
+    Slice key_{}, val_{};
   };
 
-  return std::make_unique<TableIter>(this, cmp_);
+  return std::make_unique<TableIter>(this);
 }
 
 Status TableReader::Get(Slice internal_key, std::string* value_out, ValueType* type_out) const {
-  // Bloom on user key
-  Slice uk; uint64_t tr = 0;
-  if (DecodeInternalKey(internal_key, &uk, &tr)) {
-    if (!bloom_.bits.empty() && !bloom_.MayContain(uk)) {
-      return Status::NotFound("sst: bloom miss");
-    }
+  // Find candidate block using index
+  sstable::BlockHandle h;
+  if (!FindDataBlockForKey(internal_key, &h)) return Status::NotFound("sst: not found");
+
+  std::string block;
+  Status s = ReadBlock(h, &block);
+  if (!s) return s;
+
+  BlockIter it(block);
+  it.Seek(internal_key);
+  if (!it.status()) return it.status();
+  if (!it.Valid()) return Status::NotFound("sst: not found");
+
+  // Snapshot semantics: caller passes (user_key, snapshot_seq, PUT)
+  Slice target_user; uint64_t target_tr = 0;
+  if (!DecodeInternalKey(internal_key, &target_user, &target_tr)) {
+    // If caller didn't pass an internal key, require exact match.
+    if (it.key().sv() != internal_key.sv()) return Status::NotFound("sst: not found");
+    if (type_out) *type_out = ValueType::kPut;
+    if (value_out) value_out->assign(it.value().p, it.value().n);
+    return Status::OK();
   }
+  const uint64_t snapshot_seq = (target_tr >> 8);
 
-  // Use iterator seek
-  auto it = NewIterator();
-  it->Seek(internal_key);
-  if (!it->status()) return it->status();
-  if (!it->Valid()) return Status::NotFound("sst: not found");
+  // Iterate within this user key until we find seq <= snapshot.
+  while (it.Valid()) {
+    Slice k = it.key();
+    Slice uk; uint64_t tr = 0;
+    if (!DecodeInternalKey(k, &uk, &tr)) break;
+    if (uk.sv() != target_user.sv()) break;
 
-  // Must match user key and snapshot semantics:
-  Slice found = it->key();
-  Slice fuk; uint64_t ftr = 0;
-  if (!DecodeInternalKey(found, &fuk, &ftr)) return Status::Corruption("sst: bad key");
-  if (DecodeInternalKey(internal_key, &uk, &tr)) {
-    if (fuk.sv() != uk.sv()) return Status::NotFound("sst: not found");
-    uint64_t snapshot = (tr >> 8);
-    uint64_t fseq = (ftr >> 8);
-    if (fseq > snapshot) {
-      // seek landed on a newer version; advance until <= snapshot or user key changes
-      while (it->Valid()) {
-        found = it->key();
-        if (!DecodeInternalKey(found, &fuk, &ftr)) return Status::Corruption("sst: bad key2");
-        if (fuk.sv() != uk.sv()) return Status::NotFound("sst: not found");
-        fseq = (ftr >> 8);
-        if (fseq <= snapshot) break;
-        it->Next();
+    uint64_t seq = (tr >> 8);
+    if (seq <= snapshot_seq) {
+      ValueType vt = ValueType(uint8_t(tr & 0xFF));
+      if (type_out) *type_out = vt;
+      if (vt == ValueType::kPut) {
+        if (value_out) value_out->assign(it.value().p, it.value().n);
+      } else {
+        if (value_out) value_out->clear();
       }
-      if (!it->Valid()) return Status::NotFound("sst: not found");
+      return Status::OK();
     }
+    it.Next();
   }
 
-  ValueType vt = ValueType(uint8_t(ftr & 0xFF));
-  if (type_out) *type_out = vt;
-  if (vt == ValueType::kPut) {
-    if (value_out) value_out->assign(it->value().p, it->value().n);
-  } else {
-    if (value_out) value_out->clear();
-  }
-  return Status::OK();
+  return Status::NotFound("sst: not found");
 }
-
-Slice TableReader::SmallestKey() const { return Slice(); }
-Slice TableReader::LargestKey() const { return Slice(); }
