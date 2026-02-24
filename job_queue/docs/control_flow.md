@@ -1,30 +1,29 @@
 
 **Control/data flow**
 
-* Producer: enqueue(id, payload) →
-  * inserts jobs[id],
-  * appends id to ready.
+* Producer: `enqueue(job_id, payload)` →
+  * inserts `jobs[job_id].,
+  * appends `job_id` to ready queue.
 
-* Worker: lease(worker_id, duration) →
-  * pops ready,
-  * creates Lease{id, worker, now+dur, token},
-  * moves id to leased,
+* Worker: `lease(worker_id, duration)` →
+  * pops `ready`,
+  * creates `Lease{job_id, worker_id, now+dur, token}`,
+  * moves `job_id` to leased,
   * pushes expiry heap entry.
 
-* Worker: extend(id, worker, token, extra) →
-  * verifies active lease matches (worker, token),
+* Worker: `extend(job_id, worker_id, token, extra)` →
+  * verifies active lease matches (worker_id, token),
   * updates expiry to max(current_expiry, now)+extra (define semantics),
   * pushes new heap entry;
   * stale heap entries are ignored later.
 
-* Worker: complete(id, worker, token) →
-  * verifies active lease matches (worker, token),
-  * erases from leased,
-  * erases jobs[id]. (Job is gone forever.)
+* Worker: `complete(job_id, worker_id, token)` →
+  * verifies active lease matches `(worker_id, token)`,
+  * erases from `leased`,
+  * erases `jobs[job_id]`. (Job is gone forever.)
 
 * Cleaner: reap_expired() →
-  * while heap top expiry ≤ now,
-      check if lease still matches token and is expired;
-      if yes, remove from leased and push back to ready (increment attempts on job).
-
+  * `while (heap.top.expiry ≤ now)`
+      check if `lease` still matches token and is expired;
+      if yes, remove from `leased` and push back to `ready` (++job.attempts)
 
