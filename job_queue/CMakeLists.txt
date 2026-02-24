@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(XXX_engine LANGUAGES CXX)
+project(job_queue LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,13 +10,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # --- Library sources under src/ ---
 file(GLOB_RECURSE LSM_SOURCES CONFIGURE_DEPENDS
-  "${CMAKE_SOURCE_DIR}/src/A/*.cpp"
-  "${CMAKE_SOURCE_DIR}/src/B/*.cpp"
-  "${CMAKE_SOURCE_DIR}/src/C/*.cpp"
+  "${CMAKE_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_SOURCE_DIR}/src/*.h"
 )
 
-add_library(XXX_engine STATIC ${LSM_SOURCES})
-target_include_directories(XXX_engine PUBLIC "${CMAKE_SOURCE_DIR}/src")
+add_library(job_queue STATIC ${LSM_SOURCES})
+target_include_directories(job_queue PUBLIC "${CMAKE_SOURCE_DIR}/src")
 
 # --- Tests ---
 include(CTest)
@@ -30,10 +29,11 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(XXX_engine_test test/XXX_engine_test.cpp)
-target_link_libraries(XXX_engine_test PRIVATE XXX_engine GTest::gtest_main)
-target_include_directories(XXX_engine_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_executable(test_job_queue test/test_job_queue.cpp)
+target_link_libraries(test_job_queue PRIVATE gtest_main)
+target_include_directories(test_job_queue PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_job_queue COMMAND test_job_queue)
 
 include(GoogleTest)
-gtest_discover_tests(XXX_engine_test)
+gtest_discover_tests(test_job_queue)
 

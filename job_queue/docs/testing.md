@@ -42,7 +42,7 @@ TEST(LeaseQueue, ExpiredLeaseRequeues) {
 
 * Build a `WorkerSim` that loops:
   * `lease(worker_id, dur)`
-  * “process” by advancing fake time or sleeping (if real clock)
+  * "process" by advancing fake time or sleeping (if real clock)
   * sometimes `extend` mid-flight
   * sometimes `complete`
 
@@ -50,7 +50,7 @@ TEST(LeaseQueue, ExpiredLeaseRequeues) {
 
 ### Crash testing
 
-* Simulate crash = lease a job but never call `complete`.
+* Simulate crash/stall => lease a job but never call `complete`.
 * Advance time beyond lease duration; `reap_expired`; ensure the job is leasable again.
 * Add randomized crash points: crash before extend, after extend, etc.
 

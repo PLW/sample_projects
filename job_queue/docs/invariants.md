@@ -2,9 +2,9 @@
 
 ### State partitioning invariants
 
-st.jobs is the set of all unfinished jobs
-st.ready is the set of jobs in the ready queue
-st.leased in the set of jobs currently leased to some worker
+* st.jobs is the set of all unfinished jobs
+* st.ready is the set of jobs in the ready queue
+* st.leased in the set of jobs currently leased to some worker
 
 1. A job is either **ready**, **leased**, or **absent** (completed),
    never in two places at once.

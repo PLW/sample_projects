@@ -1,4 +1,0 @@
-TEST(MVCC, XYZ) {
-  ASSERT_TRUE();
-  ASSERT_EQ(a,b);
-}
