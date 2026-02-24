@@ -131,6 +131,30 @@ struct QueueState {
 /// Lease-based work queue with visibility timeout semantics.
 class LeaseQueue {
 public:
+
+  struct Snapshot {
+    std::vector<JobId> ready_ids;
+    std::vector<JobId> leased_ids;
+    std::vector<JobId> job_ids;
+    std::unordered_map<JobId, std::uint32_t> attempts;
+  };
+
+  Snapshot snapshot() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    Snapshot s;
+    s.ready_ids.assign(st_.ready.begin(), st_.ready.end());
+    s.leased_ids.reserve(st_.leased.size());
+    for (auto const& [id, lease] : st_.leased) s.leased_ids.push_back(id);
+
+    s.job_ids.reserve(st_.jobs.size());
+    for (auto const& [id, job] : st_.jobs) {
+      s.job_ids.push_back(id);
+      s.attempts[id] = job.attempts;
+    }
+    return s;
+  }
+
+
   explicit LeaseQueue(std::shared_ptr<IClock> clock)
       : clock_(std::move(clock)) {
     if (!clock_) throw std::invalid_argument("LeaseQueue requires a non-null clock");

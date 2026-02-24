@@ -29,11 +29,21 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(test_job_queue test/test_job_queue.cpp)
+include(GoogleTest)
+
+# Unit tests (fast)
+add_executable(test_job_queue
+  test/test_job_queue.cpp
+)
 target_link_libraries(test_job_queue PRIVATE gtest_main)
 target_include_directories(test_job_queue PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_job_queue COMMAND test_job_queue)
-
-include(GoogleTest)
 gtest_discover_tests(test_job_queue)
+
+# Concurrency  torture tests (slow)
+add_executable(job_queue_concurrency_tests
+  test/test_lease_queue_concurrency.cpp
+)
+target_link_libraries(job_queue_concurrency_tests PRIVATE job_queue gtest_main)
+gtest_discover_tests(job_queue_concurrency_tests)
 
