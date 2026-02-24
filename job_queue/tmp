@@ -1,0 +1,32 @@
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	../.proposals-2.txt.swp
+	../foundationdb/
+	src/
+	test/
+	tmp
+	../lsm_mini_engine/build/
+	../lsm_mini_engine/codebase.md
+	../lsm_mini_engine/dirstruct
+	../lsm_mini_engine/src/env/
+	../lsm_mini_engine/src/lsm_engine_impl.tar
+	../lsm_mini_engine/src/sstable/builder.cpp.bak
+	../lsm_mini_engine/src/sstable/builder.h.bak
+	../lsm_mini_engine/src/sstable/fommat.h.bak
+	../lsm_mini_engine/src/sstable/reader.cpp.bak
+	../lsm_mini_engine/src/sstable/reader.h.bak
+	../lsm_mini_engine/src/sstable/tmp
+	../lsm_mini_engine/src/tmp
+	../lsm_mini_engine/src/tmp2
+	../lsm_mini_engine/tarify.py
+	../lsm_mini_engine/tmp
+	../proposals-1.txt
+	../proposals-2.txt
+	../proposals-3.txt
+	../proposals-4.txt
+	../tmp
+
+nothing added to commit but untracked files present (use "git add" to track)
