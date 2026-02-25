@@ -35,7 +35,7 @@ Following are details of the XXX system objectives, requirements,
 The system consists of 
 * some number of independent `eval nodes` and
 * some number of `data nodes`.
-* `eval nodes` maintain a copy of the (object -> shard) hash map and
+* Eval nodes maintain a copy of the (object -> shard) hash map and
     dispatch requests to the appropriate shard.
 * Data nodes process query/insert/delete requests independently.
 * Eval nodes process queries by broadcasting to one replica in every
@@ -43,7 +43,9 @@ The system consists of
 
 ---
 
-**MVP (minimum viable product) functional requirements**
+**MVP (minimum viable product) functions**
+  * `load(obj) => obj_id`
+  * `delete(obj_id)`
   * `extract_keys(obj, obj_id) => key_stream`
        (e.g.) terms, tokens, features, etc.
   * `process(key_stream, obj_id) => processed_key_stream`
@@ -95,7 +97,7 @@ secondaries.  Each shard:
   result in a state identical to a single indexing event. This is crucial for
   handling network retries.
 
-2. Distributed State & Partitioning
+2. Distributed State and Partitioning
 Because the access structure is distributed, you must maintain invariants
 regarding how data is sliced and moved.
 
