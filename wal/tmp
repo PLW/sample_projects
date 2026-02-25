@@ -1,0 +1,2 @@
+git add CMakeLists.txt prompts/design_prompt.md builder.sh generate.sh prompts/comm_prompt.md prompts/core_interfaces_prompt.md
+

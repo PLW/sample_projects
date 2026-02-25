@@ -1,0 +1,86 @@
+// proto/dist_index.proto
+syntax = "proto3";
+package distidx;
+
+message Status {
+  enum Code {
+    OK = 0;
+    NOT_LEADER = 1;
+    NOT_PRIMARY = 2;
+    STALE_EPOCH = 3;
+    UNAVAILABLE = 4;
+    INTERNAL = 5;
+  }
+
+  Code code = 1;
+  string message = 2;
+  string redirect_address = 3;
+  uint64 epoch = 4;
+}
+
+message RequestContext {
+  string request_id = 1;
+  uint64 epoch = 2;
+}
+
+message QueryRequest {
+  RequestContext ctx = 1;
+  string query = 2;
+  uint32 top_k = 3;
+}
+
+message QueryResponse {
+  Status status = 1;
+  repeated uint64 doc_ids = 2;
+}
+
+service EvalService {
+  rpc Query(QueryRequest) returns (QueryResponse);
+}
+
+message ShardLocation {
+  uint32 shard_id = 1;
+  string primary = 2;
+  repeated string replicas = 3;
+}
+
+message ShardMapRequest {
+  RequestContext ctx = 1;
+}
+
+message ShardMapResponse {
+  Status status = 1;
+  repeated ShardLocation shards = 2;
+}
+
+service MetadataService {
+  rpc GetShardMap(ShardMapRequest) returns (ShardMapResponse);
+}
+
+message SearchShardRequest {
+  RequestContext ctx = 1;
+  uint32 shard_id = 2;
+  string term = 3;
+}
+
+message SearchShardResponse {
+  Status status = 1;
+  repeated uint64 doc_ids = 2;
+}
+
+message IndexWriteRequest {
+  RequestContext ctx = 1;
+  uint32 shard_id = 2;
+  bytes document = 3;
+}
+
+message WalChunk {
+  bytes data = 1;
+}
+
+service IndexService {
+  rpc SearchShard(SearchShardRequest) returns (SearchShardResponse);
+  rpc IndexWrite(IndexWriteRequest) returns (Status);
+  rpc ReplicateWAL(stream WalChunk) returns (Status);
+} 
+
