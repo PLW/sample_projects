@@ -8,6 +8,9 @@ and sensory emphasis.
 
 --- 
 
+![!The Libic Lobe](The_Limbic_Lobe.png "The Limbic Lobe")
+
+
 ## Major components and what they do
 
 * Cerebral cortex (neocortex + insula)
