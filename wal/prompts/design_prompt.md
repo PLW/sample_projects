@@ -13,7 +13,7 @@ should include tradeoff analysis.  It should include:
 
 ---
 
-Following are details of the XXX system objectives, requirements,
+Following are details of the WAL system objectives, requirements,
  and basic design elements.
 
 ---
@@ -42,7 +42,7 @@ Following are details of the XXX system objectives, requirements,
 
 **Design document structure**
 
-We construct the distributed system XXX by decomposing the problem into
+We construct the WAL system by decomposing the problem into
 small, manageable, testable steps:
 
 * Part 1: define the data structures
