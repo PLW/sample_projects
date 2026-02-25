@@ -2,7 +2,14 @@
 
 ### Summary
 
-We want a per-node, append-only write-ahead log (WAL) that persists `PUT k v` and `DEL k` mutations, supports crash recovery even if the last write is partially torn, and rebuilds the in-memory KV state by replaying records until the first invalid/partial record (then **stop safely**). Stretch goals add log rotation + snapshots and an explicit durability/throughput knob (fsync policy). The design also states what durability means in a distributed setting (split-brain, node loss, rebalancing), even though the WAL itself is a local primitive.
+We want a per-node, append-only write-ahead log (WAL) that persists `PUT(k,v)`
+and `DEL(k)` mutations, supports crash recovery even if the last write is
+partially torn, and rebuilds the in-memory KV state by replaying records until
+he first invalid/partial record (then **stop safely**). Stretch goals add log
+rotation + snapshots and an explicit durability/throughput knob (fsync policy).
+The design also states what durability means in a distributed setting
+(split-brain, node loss, rebalancing), even though the WAL itself is a local
+primitive.
 
 ---
 
