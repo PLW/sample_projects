@@ -1,64 +1,68 @@
 
 You are my C++ system architecture and design expert consultant.
-We are designing a distributed inverted file index system.
+We are designing a distributed XXX system.
 We need a high-level design document that describes the system
 but does not contain actual C++ implementations.  The document
-should include tradeoff analysis, (i.e.) act as ADR (Architecture
-Decision Record). It should address NFRs (Non-Functional Requirements),
-SLOs (Service Level Objectives), and SRE (Site Reliability Engineering).
+should include tradeoff analysis.  It should include:
+* ADR (Architecture Decision Records). 
+* NFR (Non-Functional Requirements),
+* SLO (Service Level Objectives), and
+* SRE (Site Reliability Engineering).
 
 ---
 
-Following are details of the system objectives, requirements and
-basic design elements.
+Following are details of the XXX system objectives, requirements,
+ and basic design elements.
 
 ---
 
-**Basic system elements and functions**
+**Basic system elements and NFRs**
 
-* The system distributes the index into per-host `shards`, and
-* within each shard partitions the index into `segments`.  
-* Sharding is based on URL hash. 
-* New documents are dipatched to the appropriate shard, where
-* they are tokenized and inverted into an in-memory inverted index. 
-* The in-memory index is periodically flushed to disk as an immutable
-  persistent segment.
+* The system distributes storage units (indexes, trees, etc.) into
+   per-host `shards`, and
+* within each shard partitions the storage units into `segments`.  
+* Sharding is based on object, (e.g.) URL, hash. 
+* New objects are dipatched to the appropriate shard, where
+   they are processed into an in-memory segment.
+* The in-memory segment is periodically flushed to persistent storage
+   as an immutable persistent segment.
 * Immutable segments are periodically merged.
 * The set of `in-play` segments is maintained by a metadata service that
-  contains the (hash -> host) mapping, and the (shard -> active segments) list.
-* Queries are evaluated by scatter-gather broadcast to all shards,
-  followed by merge results and re-rank.
+   contains the (hash -> host) mapping, and the (shard -> active segments) list.
+* Queries are evaluated by scatter-gather broadcast to all shards (scatter),
+   followed by merge results and re-rank (gather).
 
 The system consists of 
 * some number of independent `eval nodes` and
 * some number of `data nodes`.
-* Eval nodes maintain a copy of the (URL -> shard) mapping and dispatch
-  insert requests to the appropriate shard.
-* Data nodes process insert/delete requests independently.
+* `eval nodes` maintain a copy of the (object -> shard) hash map and
+    dispatch requests to the appropriate shard.
+* Data nodes process query/insert/delete requests independently.
 * Eval nodes process queries by broadcasting to one replica in every
-  shard, then gathering, and re-ranking the results.
+  shard, then gathering and re-ranking the results.
 
 ---
 
-**MVP (minimum viable product) requirements**
-  * `token_stream(doc, doc_id)`
-  * `invert_tokens(token_stream, doc_id)`
-  * `update_index(inverted_tokens)`
-  * `posting_lists` with skip lists 
-  * `multi_way_merge` of posting lists query optimization
-  * `iterator` composable iterator interface for query results
-  * `postlist_iterator`
-  * `columnar_facets` as instances of `postlist_iterator`
-  * `and_iterator` : public `postlist_iterator`
-  * `or_iterator` : public `postlist_iterator`
-  * `flush_index()` => `persistent_segment_id`
-  * `merge(seg1, seg2)` => `seg3`
-  * `query(q)` => `postlist_iterator`
-  * `query(q1 AND q2)` => `and_iterator(it1(q1),it2(q2))`
-  * `query(q1 OR q2)` => `or_iterator(it1(q1),it2(q2))`
-  * `doc(doc_id)` => `doc`
-  * `metadata(doc_id)` => `doc_metadata`
-  * `metadata()` => `shard_status`
+**MVP (minimum viable product) functional requirements**
+  * `extract_keys(obj, obj_id) => key_stream`
+       (e.g.) terms, tokens, features, etc.
+  * `process(key_stream, obj_id) => processed_key_stream`
+       (e.g.) generate new index structure items: postings, embedding vectors
+  * `update_in_memory_segment(processed_key_stream, obj_id)`
+       (e.g.) insert new keys into memory segment index
+  * `flush_memory_segment() => persistent_segment`
+  * `multi_way_merge` of persistent segments for query optimization
+  * `result_iterator` composable iterator interface for query results
+  * `filters` as instances of `result_iterator`
+  * `and_iterator : public result_iterator`
+  * `or_iterator : public result_iterator`
+  * `near_iterator : public result_iterator`
+  * `query(q) => result_iterator`
+  * `query(q1 AND q2) => and_iterator(it1(q1),it2(q2))`
+  * `query(q1 OR q2) => or_iterator(it1(q1),it2(q2))`
+  * `obj(obj_id) => obj`
+  * `metadata(obj_id) => obj_metadata`
+  * `metadata() => shard_status`
 
 ---
 
@@ -74,35 +78,35 @@ secondaries.  Each shard:
 ---
 
 **Invariants**
-1. Term-Document Mapping Invariants
- The core integrity of the index depends on the bidirectional relationship
- between documents and the terms they contain.
+1. Access-Object Mapping Invariants
+ The core integrity of the access structure depends on the bidirectional
+ relationship between objects and the access keys they contain.
 
-* Reflexive Consistency: For every document $D$ containing term $T$, the
-  posting list $L_T$ must contain a reference to $D$. Conversely, if $L_T$
-  contains $D$, term $T$ must actually exist in the current version of document
-  $D$.
+* Reflexive Consistency: For every object $B$ containing access key $K$, the
+  access structure $A_K$ must contain a reference to $B$. Conversely, if $A_K$
+  contains $K$, the key $K$ must actually exist in the current version of object 
+  $B$.
 
-* Unique Document Identity: A document $D$ must be mapped to exactly one
-  primary shard at any given time (usually via $hash(docID) \pmod N$) to prevent
+* Unique Object Identity: An object $B$ must be mapped to exactly one
+  primary shard at any given time (usually via $hash(objID) \pmod N$) to prevent
   duplicate entries in global result sets.
 
-* Idempotency of Updates: Re-indexing the same document version $V_1$ must
+* Idempotency of Updates: Re-indexing the same object version $V_1$ must
   result in a state identical to a single indexing event. This is crucial for
   handling network retries.
 
 2. Distributed State & Partitioning
-Because the index is distributed, you must maintain invariants regarding how
-data is sliced and moved.
+Because the access structure is distributed, you must maintain invariants
+regarding how data is sliced and moved.
 
 * Shard Completeness: The union of all shards must equal the complete set of
-  indexed documents. $\bigcup_{i=1}^{n} S_i = \mathcal{D}_{total}$.
+  stored objects. $\bigcup_{i=1}^{n} S_i = \mathcal{D}_{total}$.
 
-* Term Locality (for Term-Partitioned): If using term-partitioning, all
-  occurrences of a term $T$ across the entire corpus must reside on the same
+* Key Locality (for Key-Partitioned): If using key-partitioning, all
+  occurrences of a key $K$ across the entire corpus must reside on the same
   logical shard.
 
-* Routing Stability: During a "rebalance" or "resharding" event, a document
+* Routing Stability: During a "rebalance" or "resharding" event, an object
   must be searchable in either the old shard or the new shard, but never
   "missing" or "double-counted" in a final merged result set.
 
@@ -111,9 +115,9 @@ In a high-velocity system, the order of operations determines the "truth" of the
 index.
 
 * Happens-Before Consistency: If Update A (Delete $D$) is acknowledged before
-  Update B (Re-add $D$), the index must not reflect $D$ in a stale state.
+  Update B (Re-add $D$), the system must not reflect $D$ in a stale state.
 
-* Monotonic Versioning: Every document must have an associated version number
+* Monotonic Versioning: Every object must have an associated version number
   or timestamp. The system must reject any write where $Version_{incoming} \le
   Version_{stored}$ to prevent "out-of-order" synchronization from overwriting
   newer data.
@@ -139,26 +143,27 @@ These invariants ensure the system survives node failures.
       
 ---
 
-**Design doc structure**
+**Design document structure**
 
-We address the task of constructing the distributed inverted index
-by decomposing the problem into small, manageable steps:
+We construct the distributed system XXX by decomposing the problem into
+small, manageable, testable steps:
 
-Step 1: define the data structures;
-Step 2: outline the system at a high level: modules, classes, methods;
-Step 3: outline the data and control flow among the components;
-Step 4: catalog the invariants which must hold for the system state;
-Step 5: define the unit-testable (gtest) components which allow
+* Part 1: define the data structures
+* Part 2: outline the system at a high level: modules, classes, methods
+* Part 3: outline the data and control flow among the components
+* Part 4: catalog the invariants which must hold for the system state
+* Part 5: define the unit-testable (gtest) components which allow
   incremental testing for correctness with respect to invariants and
-  gold-standard expected behavior;
-Step 6: define a general integration testing strategy using gtest:
+  gold-standard expected behavior
+* Part 6: define a general integration testing strategy using gtest:
   worker simulations, crash testing, high concurrency, gold-standard
-  behavioral checking.
-Step 7: define a scale-testing strategy, using the "default mode is failure,
-  correctness must be engineered" model.
-Step 8: Durability guarantees that address:
+  behavioral checking
+* Part 7: define a scale-testing strategy, using the "default mode is failure,
+  correctness must be engineered" model
+* Part 8: Durability guarantees that address
   * Partial failure
   * Split-brain
   * Node loss
   * Rebalancing events
+
 ---
